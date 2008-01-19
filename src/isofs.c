@@ -37,6 +37,9 @@
 
 #include "isofs.h"
 
+#define ARR_LENGTH(arr) \
+	(sizeof(arr) == 0) ? (0) : (sizeof(arr) / sizeof(arr[0]))
+
 static isofs_context context;
 static GHashTable *lookup_table;
 static GHashTable *negative_lookup_table;
@@ -45,6 +48,12 @@ static pthread_mutex_t fd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int isofs_check_rr(struct iso_directory_record *root_record);
 static int isofs_read_raw_block(int block, char *buf);
+
+typedef struct _iso_definition {
+	size_t block_size;
+	size_t block_offset;
+	int file_offset;
+} iso_definition;
 
 extern char* iocharset;
 
@@ -60,7 +69,7 @@ guint local_g_strv_length (gchar **str_array) {
 
 int isofs_real_preinit( char* imagefile, int fd) {
     
-    memset(& context, 0, sizeof(isofs_context));
+    memset(&context, 0, sizeof(isofs_context));
     
     context.imagefile = imagefile;
     context.fd = fd;
@@ -80,61 +89,43 @@ int isofs_real_preinit( char* imagefile, int fd) {
     context.block_offset = 0;
     context.file_offset = 0;
     
-    enum {
-        IDOFF_ISO_2048 = 2048 * 16,
-        IDOFF_MODE1_2352 = 2352 * 16 + 16,
-        IDOFF_MODE2_2352_RAW = 2352 * 16,
-        IDOFF_MODE2_2352 = 2352 * 16 + 24,
-        IDOFF_MODE2_2336 = 2336 * 16 + 16,
-        IDOFF_NRG = 2048 * 16 + 307200,
+    iso_definition iso_defs[] = {
+    		{2048, 0, 0}, // ISO_2048
+    		{2352, 0, 0}, // MODE1_2352_RAW
+    		{2352, 16, 0}, // MODE1_2352
+    		{2352, 24, 0}, // MODE2_2352
+    		{2336, 16, 0}, // MODE2_2336
+    		{2048, 0, 307200}, // NRG
     };
-    int iso_offsets[] = {IDOFF_ISO_2048, IDOFF_MODE2_2336, IDOFF_MODE2_2352_RAW, IDOFF_NRG};
+    
     // try to find CD001 identifier
     int i;
-    for(i = 0; i < 4; i++) {
-        if(lseek(fd, iso_offsets[i], SEEK_SET) == -1) {
-            perror("can`t lseek() to next possible data start position; is it really supported file?");
+    for(i = 0; i < ARR_LENGTH(iso_defs); i++) {
+    	int id_offset = iso_defs[i].block_size * 16 +
+    			iso_defs[i].block_offset + iso_defs[i].file_offset;
+    	
+        if(lseek(fd, id_offset, SEEK_SET) == -1) {
+        	fprintf(stderr, "can`t lseek() to next possible data start position (%d); is it really supported file?", id_offset);
             exit(EIO);
         };
+        
         ssize_t size = read(fd, vd, sizeof(struct iso_volume_descriptor));
         if(size != sizeof(struct iso_volume_descriptor)) {
-            fprintf(stderr, "only %d bytes read from position %d, %d required; is it really supported file?\n", 
-                size, iso_offsets[i], sizeof(struct iso_volume_descriptor));
+            fprintf(stderr, "only %d bytes read from position %d, %d required; is it really a supported file?\n", 
+                size, id_offset, sizeof(struct iso_volume_descriptor));
             exit(EIO);
         };
+        
         char *vd_id = (char *) vd->id;
         if(strncmp("CD001", vd_id, 5) == 0) {
             // found CD001!
             // fill context with information about block size and block offsets
-            context.id_offset = iso_offsets[i];
-            switch(iso_offsets[i]) {
-                case IDOFF_ISO_2048:
-                    // normal iso file
-                    // use defaults
-                    break;
-                case IDOFF_MODE2_2352_RAW:
-                    context.block_size = 2352;
-                    break;
-                case IDOFF_MODE2_2336:
-                    context.block_size = 2336;
-                    context.block_offset = 16;
-                    break;
-                case IDOFF_NRG:
-                    context.file_offset = 307200;
-                    break;
-                default:
-                    break;
-            };
-            break;
-        } else if(strncmp("CD001", vd_id + 16, 5) == 0) {
-            context.id_offset = iso_offsets[i] + 16;
-            context.block_size = 2352;
-            context.block_offset = 16;
-            break;
-        } else if(strncmp("CD001", vd_id + 24, 5) == 0) {
-            context.id_offset = iso_offsets[i] + 24;
-            context.block_size = 2352;
-            context.block_offset = 24;
+        	context.data_size = 2048;
+            context.id_offset = id_offset;
+            
+            context.block_size = iso_defs[i].block_size;
+            context.block_offset = iso_defs[i].block_offset;
+            context.file_offset = iso_defs[i].file_offset;
             break;
         };
     };
@@ -142,8 +133,7 @@ int isofs_real_preinit( char* imagefile, int fd) {
 /*    printf("CD001 found at %d, bs %d, boff %d, ds %d\n", 
         context.id_offset, context.block_size, context.block_offset, context.data_size);*/
     while(1) {
-        if(lseek(fd, context.block_size * (16 + vd_num) + 
-            context.block_offset + context.file_offset, SEEK_SET) == -1) {
+        if(lseek(fd, context.id_offset + context.block_size * vd_num, SEEK_SET) == -1) {
             perror("can`t lseek() to next volume descriptor");
             exit(EIO);
         };
@@ -177,15 +167,9 @@ int isofs_real_preinit( char* imagefile, int fd) {
                         context.root = (struct iso_directory_record *)& context.pd.root_directory_record;
                         context.data_size = isonum_723(context.pd.logical_block_size);
                         
-                        if(!context.block_size) {
+                        if(!context.data_size) {
                             fprintf(stderr, "init: wrong block data size %d, using default 2048\n", context.data_size);
                             context.data_size = 2048;
-                        };
-                        
-                        if(context.block_size != 2048) {
-                            // report unusual data block size
-                            // later
-                            // printf("Data block size: %d\n", context.block_size);
                         };
                         
                         if(isofs_check_rr(context.root)) {
