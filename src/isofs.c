@@ -49,6 +49,11 @@ static pthread_mutex_t fd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int isofs_check_rr(struct iso_directory_record *root_record);
 static int isofs_read_raw_block(int block, char *buf);
 
+static void identify_iso();
+static int read_next_volume_descriptor();
+
+struct iso_volume_descriptor vd;
+
 typedef struct _iso_definition {
 	size_t block_size;
 	size_t block_offset;
@@ -74,179 +79,95 @@ int isofs_real_preinit( char* imagefile, int fd) {
     context.imagefile = imagefile;
     context.fd = fd;
     
-    // trying to read all volume descriptors
-    struct iso_volume_descriptor *vd = 
-        (struct iso_volume_descriptor *) malloc(sizeof(struct iso_volume_descriptor));
-    if(!vd) {
-        perror("Can`t malloc: ");
-        exit(ENOMEM);
-    };
-    int vd_num = 0;
-    
-    // defaults for iso
-    context.block_size = 2048;
-    context.data_size = 2048;
-    context.block_offset = 0;
-    context.file_offset = 0;
-    
-    iso_definition iso_defs[] = {
-    		{2048, 0, 0}, // ISO_2048
-    		{2352, 0, 0}, // MODE1_2352_RAW
-    		{2352, 16, 0}, // MODE1_2352
-    		{2352, 24, 0}, // MODE2_2352
-    		{2336, 16, 0}, // MODE2_2336
-    		{2048, 0, 307200}, // NRG
-    };
-    
-    // try to find CD001 identifier
-    int i;
-    for(i = 0; i < ARR_LENGTH(iso_defs); i++) {
-    	int id_offset = iso_defs[i].block_size * 16 +
-    			iso_defs[i].block_offset + iso_defs[i].file_offset;
-    	
-        if(lseek(fd, id_offset, SEEK_SET) == -1) {
-        	fprintf(stderr, "can`t lseek() to next possible data start position (%d); is it really supported file?", id_offset);
-            exit(EIO);
-        };
-        
-        ssize_t size = read(fd, vd, sizeof(struct iso_volume_descriptor));
-        if(size != sizeof(struct iso_volume_descriptor)) {
-            fprintf(stderr, "only %d bytes read from position %d, %d required; is it really a supported file?\n", 
-                size, id_offset, sizeof(struct iso_volume_descriptor));
-            exit(EIO);
-        };
-        
-        char *vd_id = (char *) vd->id;
-        if(strncmp("CD001", vd_id, 5) == 0) {
-            // found CD001!
-            // fill context with information about block size and block offsets
-        	context.data_size = 2048;
-            context.id_offset = id_offset;
-            
-            context.block_size = iso_defs[i].block_size;
-            context.block_offset = iso_defs[i].block_offset;
-            context.file_offset = iso_defs[i].file_offset;
-            break;
-        };
-    };
+    identify_iso();
     
 /*    printf("CD001 found at %d, bs %d, boff %d, ds %d\n", 
         context.id_offset, context.block_size, context.block_offset, context.data_size);*/
-    while(1) {
-        if(lseek(fd, context.id_offset + context.block_size * vd_num, SEEK_SET) == -1) {
-            perror("can`t lseek() to next volume descriptor");
-            exit(EIO);
-        };
-        ssize_t size = read(fd, vd, sizeof(struct iso_volume_descriptor));
-        if(size != sizeof(struct iso_volume_descriptor)) {
-            fprintf(stderr, "only %d bytes read from volume descriptor %d, %d required\n", 
-                size, vd_num, sizeof(struct iso_volume_descriptor));
-            exit(EIO);
-        };
-        
-        int vd_type = isonum_711((unsigned char *)vd->type);
+    while(read_next_volume_descriptor() != ISO_VD_END) {
+           
+        int vd_type = isonum_711((unsigned char *)(vd.type));
 //         printf("init: found volume descriptor type %d, vd_num %d\n", vd_type, vd_num);
         
-        if(strncmp("CD001", vd->id, 5) != 0) {
-            if(vd_num > 16) {
-                // no more trying
-                fprintf(stderr, "init: wrong standard identifier in volume descriptor %d, exiting..\n", vd_num);
-                exit(EIO);
-            } else {
-                // try to continue
-                fprintf(stderr, "init: wrong standard identifier in volume descriptor %d, skipping..\n", vd_num);
-            };
-        } else {
-            switch(vd_type) {
-                case ISO_VD_PRIMARY:
-                    // check if this is only primary descriptor found
-                    if(context.pd.type[0]) {
-                        fprintf(stderr, "init: primary volume descriptor already found, skipping..\n");
-                    } else {
-                        memcpy(& context.pd, vd, sizeof(struct iso_volume_descriptor));
-                        context.root = (struct iso_directory_record *)& context.pd.root_directory_record;
-                        context.data_size = isonum_723(context.pd.logical_block_size);
-                        
-                        if(!context.data_size) {
-                            fprintf(stderr, "init: wrong block data size %d, using default 2048\n", context.data_size);
-                            context.data_size = 2048;
-                        };
-                        
-                        if(isofs_check_rr(context.root)) {
-                            context.pd_have_rr = 1;
-                        };
-                    };
-                    break;
-                
-                case ISO_VD_SUPPLEMENTARY:
-                    {
-                        struct iso_supplementary_descriptor *sd = (struct iso_supplementary_descriptor *) vd;
-                        
-                        if(!context.pd.type[0]) {
-                            fprintf(stderr, "init: supplementary volume descriptor found, but no primary descriptor!\n");
-                            exit(EIO);
-                        } else {
-                            int joliet_level = 0;
-                            
-                            if(sd->escape[0] == 0x25 && sd->escape[1] == 0x2f) {
-                                switch(sd->escape[2]) {
-                                    case 0x40:
-                                        joliet_level = 1;
-                                        break;
-                                    case 0x43:
-                                        joliet_level = 2;
-                                        break;
-                                    case 0x45:
-                                        joliet_level = 3;
-                                        break;
-                                };
-                            };
-                            
-                            int have_rr = 
-                                isofs_check_rr((struct iso_directory_record *) sd->root_directory_record);
-                            
-                            // switch to SVD only if it contain RRIP or if PVD have no RRIP
-                            // in other words, prefer VD with RRIP
-                            if((joliet_level && have_rr) ||
-                                (have_rr && !context.pd_have_rr) || 
-                                (joliet_level && !context.pd_have_rr)) {
-                                
-                                context.joliet_level = joliet_level;
-                                memcpy(& context.sd, vd, sizeof(struct iso_volume_descriptor));
-                                context.supplementary = 1;
-                                
-                                context.root = (struct iso_directory_record *) context.sd.root_directory_record;
-                                
-                                // printf("init: switching to supplementary descriptor %d, joliet_level %d, have_rr %d\n", 
-                                //     vd_num, context.joliet_level, have_rr);
-                            } else {
-                                context.joliet_level = 0;
-                                // printf("init: found supplementary descriptor %d, flags %d\n", 
-                                //     vd_num, isonum_711(sd->flags));
-                            };
-                        };
-                    };
-                    break;
-                
-                case 0:
-                    // boot record, not intresting..
-                    break;
-                
-                case ISO_VD_END:
-                    free(vd);
-                    goto out;
-                    break;
+        switch(vd_type) {
+            case ISO_VD_PRIMARY:
+                // check if this is only primary descriptor found
+                if(context.pd.type[0]) {
+                    fprintf(stderr, "init: primary volume descriptor already found, skipping..\n");
+                } else {
+                    memcpy(&context.pd, &vd, sizeof(struct iso_volume_descriptor));
+                    context.root = (struct iso_directory_record *)& context.pd.root_directory_record;
+                    context.data_size = isonum_723(context.pd.logical_block_size);
                     
-                default:
-                    fprintf(stderr, "init: unsupported volume descriptor type %d, vd_num %d\n", 
-                        vd_type, vd_num);
-                    break;
-            };
-        };
-        
-        vd_num += 1;
+                    if(!context.data_size) {
+                        fprintf(stderr, "init: wrong block data size %d, using default 2048\n", context.data_size);
+                        context.data_size = 2048;
+                    };
+                    
+                    if(isofs_check_rr(context.root)) {
+                        context.pd_have_rr = 1;
+                    };
+                };
+                break;
+            
+            case ISO_VD_SUPPLEMENTARY:
+                {
+                    struct iso_supplementary_descriptor *sd = (struct iso_supplementary_descriptor *)&vd;
+                    
+                    if(!context.pd.type[0]) {
+                        fprintf(stderr, "init: supplementary volume descriptor found, but no primary descriptor!\n");
+                        exit(EIO);
+                    } else {
+                        int joliet_level = 0;
+                        
+                        if(sd->escape[0] == 0x25 && sd->escape[1] == 0x2f) {
+                            switch(sd->escape[2]) {
+                                case 0x40:
+                                    joliet_level = 1;
+                                    break;
+                                case 0x43:
+                                    joliet_level = 2;
+                                    break;
+                                case 0x45:
+                                    joliet_level = 3;
+                                    break;
+                            };
+                        };
+                        
+                        int have_rr = 
+                            isofs_check_rr((struct iso_directory_record *) sd->root_directory_record);
+                        
+                        // switch to SVD only if it contain RRIP or if PVD have no RRIP
+                        // in other words, prefer VD with RRIP
+                        if((joliet_level && have_rr) ||
+                            (have_rr && !context.pd_have_rr) || 
+                            (joliet_level && !context.pd_have_rr)) {
+                            
+                            context.joliet_level = joliet_level;
+                            memcpy(&context.sd, &vd, sizeof(struct iso_volume_descriptor));
+                            context.supplementary = 1;
+                            
+                            context.root = (struct iso_directory_record *) context.sd.root_directory_record;
+                            
+                            // printf("init: switching to supplementary descriptor %d, joliet_level %d, have_rr %d\n", 
+                            //     vd_num, context.joliet_level, have_rr);
+                        } else {
+                            context.joliet_level = 0;
+                            // printf("init: found supplementary descriptor %d, flags %d\n", 
+                            //     vd_num, isonum_711(sd->flags));
+                        };
+                    };
+                };
+                break;
+            
+            case 0:
+                // boot record, not intresting..
+                break;
+                
+            default:
+                fprintf(stderr, "init: unsupported volume descriptor type %d\n", vd_type);
+                break;
+        }
     };
-out:
     
     if(!context.pd.type[0]) {
         fprintf(stderr, "init: primary volume descriptor not found! exiting..\n");
@@ -274,6 +195,89 @@ out:
     
     return 0;
 };
+
+static void identify_iso() {
+	struct iso_volume_descriptor vd;
+	
+	// defaults for iso
+    context.block_size = 2048;
+    context.data_size = 2048;
+    context.block_offset = 0;
+    context.file_offset = 0;
+    
+    iso_definition iso_defs[] = {
+    		{2048, 0, 307200}, // NRG
+    		{2048, 0, 0}, // ISO_2048
+    		{2352, 0, 0}, // MODE1_2352_RAW
+    		{2352, 16, 0}, // MODE1_2352
+    		{2352, 24, 0}, // MODE2_2352
+    		{2336, 16, 0}, // MODE2_2336
+    };
+    
+    // try to find CD001 identifier
+    int i;
+    for(i = 0; i < ARR_LENGTH(iso_defs); i++) {
+    	int id_offset = iso_defs[i].block_size * 16 +
+    			iso_defs[i].block_offset + iso_defs[i].file_offset;
+    	
+        if(lseek(context.fd, id_offset, SEEK_SET) == -1) {
+        	fprintf(stderr, "can`t lseek() to next possible data start position (%d); is it really supported file?", id_offset);
+            exit(EIO);
+        };
+        
+        ssize_t size = read(context.fd, &vd, sizeof(struct iso_volume_descriptor));
+        if(size != sizeof(struct iso_volume_descriptor)) {
+            fprintf(stderr, "only %d bytes read from position %d, %d required; is it really a supported file?\n", 
+                size, id_offset, sizeof(struct iso_volume_descriptor));
+            exit(EIO);
+        };
+        
+        char *vd_id = (char *) (vd.id);
+        if(strncmp("CD001", vd_id, 5) == 0) {
+            // found CD001!
+            // fill context with information about block size and block offsets
+        	context.data_size = 2048;
+            context.id_offset = id_offset;
+            
+            context.block_size = iso_defs[i].block_size;
+            context.block_offset = iso_defs[i].block_offset;
+            context.file_offset = iso_defs[i].file_offset;
+            break;
+        };
+    };
+}
+
+static int read_next_volume_descriptor() {
+	static int vd_num = 0;
+
+	if(lseek(context.fd, context.id_offset + context.block_size * vd_num, SEEK_SET) == -1) {
+        perror("can`t lseek() to next volume descriptor");
+        exit(EIO);
+    }
+    
+    ssize_t size = read(context.fd, &vd, sizeof(struct iso_volume_descriptor));
+    
+    if(size != sizeof(struct iso_volume_descriptor)) {
+        fprintf(stderr, "only %d bytes read from volume descriptor %d, %d required\n", 
+            size, vd_num, sizeof(struct iso_volume_descriptor));
+        exit(EIO);
+    }
+        
+    if(strncmp("CD001", vd.id, 5) != 0) {
+        if(vd_num > 16) {
+            // no more trying
+            fprintf(stderr, "init: wrong standard identifier in volume descriptor %d, exiting..\n", vd_num);
+            exit(EIO);
+        } else {
+            // try to continue
+            fprintf(stderr, "init: wrong standard identifier in volume descriptor %d, skipping..\n", vd_num);
+        }
+    }
+    
+    vd_num++;
+    
+    return isonum_711((unsigned char *)(vd.type));
+}
 
 static char* dstr(char* str, const char* src, int len) {
     int i;
