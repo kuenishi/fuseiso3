@@ -1520,13 +1520,23 @@ int isofs_real_readdir(const char *path, void *filler_buf, isofs_dir_fill_t fill
             if(path[1] != '\0') { // not root dir
                 strcat(absolute_entry, "/");
             };
-            strcat(absolute_entry, entry);
-            if(g_hash_table_lookup(lookup_table, absolute_entry)) {
-                // already in lookup cache
+
+            if(strlen(absolute_entry) + strlen(entry) <= PATH_MAX-1) {
+                strcat(absolute_entry, entry);
+                if(g_hash_table_lookup(lookup_table, absolute_entry)) {
+                    // already in lookup cache
+                    isofs_free_inode(inode);
+                } else {
+                    g_hash_table_insert(lookup_table, g_strdup(absolute_entry), inode);
+                };
+            }
+            else {
+                printf("readdir: absolute path name for entry '%s' exceeding PATH_MAX (%d)\n", entry, PATH_MAX);
                 isofs_free_inode(inode);
-            } else {
-                g_hash_table_insert(lookup_table, g_strdup(absolute_entry), inode);
-            };
+                free(buf);
+                free(entry);
+                return -EIO;
+            }
             
             free(entry);
             
