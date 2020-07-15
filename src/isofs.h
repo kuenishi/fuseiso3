@@ -38,9 +38,9 @@ typedef struct _isofs_context {
     struct iso_directory_record *root;
     int file_offset; // offset to begin of useful data (for .nrg files)
     int id_offset; // offset to CD001 inside file
-    size_t block_size; // raw block size
-    size_t block_offset; // offset from block start to data
-    size_t data_size; // data size inside block 
+    off_t block_size; // raw block size
+    off_t block_offset; // offset from block start to data
+    off_t data_size; // data size inside block 
     int susp; // parse susp entries
     int susp_skip; // skip bytes from susp SP entry
     int joliet_level; // joliet extension level (1, 2 or 3)

@@ -99,7 +99,7 @@ int isofs_real_preinit( char* imagefile, int fd) {
                     context.data_size = isonum_723(context.pd.logical_block_size);
                     
                     if(!context.data_size) {
-                        fprintf(stderr, "init: wrong block data size %d, using default 2048\n", context.data_size);
+                        fprintf(stderr, "init: wrong block data size %Lu, using default 2048\n", context.data_size);
                         context.data_size = 2048;
                     };
                     
@@ -312,7 +312,7 @@ void* isofs_real_init() {
     
     if(context.block_size != 2048) {
         // report unusual data block size
-        printf("Data block size: %d\n", context.block_size);
+        printf("Data block size: %Lu\n", context.block_size);
     };
     
     char buf[129];
@@ -467,7 +467,7 @@ static int isofs_read_raw_block(int block, char *buf) {
     };
     size_t len = read(context.fd, buf, context.data_size);
     if(len != context.data_size) {
-        fprintf(stderr, "isofs_read_raw_block: can`t read full block, read only %d bytes from offset %d, %d required; errno %d, message %s\n", 
+        fprintf(stderr, "isofs_read_raw_block: can`t read full block, read only %d bytes from offset %d, %Lu required; errno %d, message %s\n", 
             len, (int) off, context.data_size, errno, strerror(errno));
         fprintf(stderr, "isofs_read_raw_block: huh? reading zeros beyond file end? someone want to save a penny?\n");
         memset(buf + len, 0, context.data_size - len);
