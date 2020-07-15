@@ -1606,6 +1606,10 @@ int isofs_real_open(const char *path) {
 };
 
 static int isofs_real_read_zf(isofs_inode *inode, char *out_buf, size_t size, off_t offset) {
+    if( inode->zf_block_shift > 17 ) {
+        fprintf(stderr, "isofs_real_read_zf: can't handle ZF block size of 2^%d\n", inode->zf_block_shift);
+        return -EIO;
+    }
     int zf_block_size = 1 << inode->zf_block_shift;
     int zf_start = offset / zf_block_size;
     int zf_end = (offset + size) / zf_block_size;
