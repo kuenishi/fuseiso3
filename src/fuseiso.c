@@ -38,8 +38,8 @@
 
 #include <linux/iso_fs.h>
 
-#define FUSE_USE_VERSION 22
-#include <fuse.h>
+#define FUSE_USE_VERSION 30
+#include <fuse3/fuse.h>
 
 #include <zlib.h>
 #include <locale.h>
@@ -380,12 +380,14 @@ int main(int argc, char *argv[])
             next_opt = 1;
         };
     };
+    /*
     if(!use_ino_found) {
         nargv[nargc] = "-o";
         nargc++;
         nargv[nargc] = "use_ino";
         nargc++;
     };
+    */
     
     if(!iocharset) {
         char *nlcharset = nl_langinfo(CODESET);
@@ -417,5 +419,5 @@ int main(int argc, char *argv[])
     // will exit in case of failure
     rc = isofs_real_preinit(imagefile, image_fd);
     
-    return fuse_main(nargc, nargv, &isofs_oper);
+    return fuse_main(nargc, nargv, &isofs_oper, NULL);
 };

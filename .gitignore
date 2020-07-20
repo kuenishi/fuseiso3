@@ -1,0 +1,8 @@
+*.o
+Makefile
+*.log
+*.status
+libtool
+.deps
+*.cache
+stamp-h1
