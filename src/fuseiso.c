@@ -262,7 +262,10 @@ static int isofs_opendir(const char *path, struct fuse_file_info *UNUSED(fi)) {
 
 static int isofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t UNUSED(offset),
     struct fuse_file_info *UNUSED(fi)) {
-    return isofs_real_readdir(path, buf, filler);
+  int call_filler(void *cbuf, const char* cname, const struct stat *cstat, off_t coff) {
+    return filler(cbuf, cname, cstat, coff, FUSE_FILL_DIR_PLUS);
+  }
+  return isofs_real_readdir(path, buf, call_filler);
 };
 
 static int isofs_statfs(const char *UNUSED(path), struct statfs *stbuf)
