@@ -352,42 +352,20 @@ int main(int argc, char *argv[])
     mount_point = normalize_name(argv[optind + 1]);
     
     // with space for possible -o use_ino arguments
-    char **nargv = (char **) malloc((argc + 2) * sizeof(char *));
+    char **nargv = (char **) malloc((argc + optind) * sizeof(char *));
     int nargc = argc - optind;
     
     nargv[0] = argv[0];
     
     int i;
     int next_opt = 0;
-    int use_ino_found = 0;
     for(i = 0; i < nargc - 1; ++i) {
-        if(next_opt && !use_ino_found) {
-            if(strstr(argv[i + optind + 1], "use_ino")) { // ok, already there
-                use_ino_found = 1;
-                nargv[i + 1] = argv[i + optind + 1];
-            } else { // add it
-                char* str = (char*) malloc(strlen(argv[i + optind + 1]) + 10);
-                strcpy(str, argv[i + optind + 1]);
-                strcat(str, ",use_ino");
-                nargv[i + 1] = str;
-                use_ino_found = 1;
-            };
-        } else {
-            nargv[i + 1] = argv[i + optind + 1];
-        };
+      nargv[i + 1] = argv[i + optind + 1];
         // check if this is -o string mean that next argument should be options string
         if(i > 1 && nargv[i + 1][0] == '-' && nargv[i + 1][1] == 'o') {
             next_opt = 1;
         };
     };
-    /*
-    if(!use_ino_found) {
-        nargv[nargc] = "-o";
-        nargc++;
-        nargv[nargc] = "use_ino";
-        nargc++;
-    };
-    */
     
     if(!iocharset) {
         char *nlcharset = nl_langinfo(CODESET);
