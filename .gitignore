@@ -6,3 +6,4 @@ libtool
 .deps
 *.cache
 stamp-h1
+Makefile.in
