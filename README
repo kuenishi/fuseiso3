@@ -1,3 +1,11 @@
+Building after cloning this repo:
+
+  sh autogen.sh
+  ./configure
+  make
+
+Upon successful building, the fuseiso binary will be in the src/ directory.
+
 Usage:
     
     fuseiso [<options>] <image_file> <mountpoint> [<FUSE library options>]

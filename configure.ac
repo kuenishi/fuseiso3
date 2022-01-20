@@ -8,6 +8,8 @@ AC_LANG_C
 AC_PROG_CC
 AM_PROG_LIBTOOL
 
+PKG_CHECK_MODULES(zlib, zlib)
+PKG_CHECK_MODULES(glib, [glib-2.0])
 PKG_CHECK_MODULES(fuse3, fuse3)
 
 #AC_CHECK_HEADERS(fuse.h, [], 
