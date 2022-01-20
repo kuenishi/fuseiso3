@@ -7,3 +7,8 @@ libtool
 *.cache
 stamp-h1
 Makefile.in
+aclocal.m4
+configure
+compile
+config.h
+fuseiso
